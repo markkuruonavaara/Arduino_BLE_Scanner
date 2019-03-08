@@ -14,7 +14,7 @@
 #define SERIAL_PRINT
 
 #include <Arduino.h>
-#include <sstream>
+#include <ArduinoJson.h>
 
 #include <BLEDevice.h>
 #include <BLEUtils.h>
@@ -31,9 +31,10 @@
 #include "soc/rtc_cntl_reg.h"
 
 WiFiMulti wifiMulti;
-std::stringstream ss;
 bool data_sent = false;
 int wait_wifi_counter = 0;
+
+StaticJsonDocument<200> doc;
 
 class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks
 {
@@ -45,13 +46,14 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks
     }
 };
 
+// see https://github.com/google/eddystone/tree/master/eddystone-uid
 uint32_t eddystoneNamespace(uint8_t raw[]) {
   int lsb = 11;
   return raw[lsb] + (raw[lsb - 1] << 8) + (raw[lsb - 2] << 16) + (raw[lsb - 3] << 24);
 }
 
 uint32_t eddystoneInstance(uint8_t raw[]) {
-  int lsb = 17; // see https://github.com/google/eddystone/tree/master/eddystone-uid
+  int lsb = 17;
   return raw[lsb] + (raw[lsb - 1] << 8) + (raw[lsb - 2] << 16) + (raw[lsb - 3] << 24);
 }
 
@@ -79,68 +81,36 @@ void setup()
 #endif
 
   BLEScanResults foundDevices = pBLEScan->start(SCAN_TIME);
+
+  JsonArray data = doc.createNestedArray("tags");
+
   int count = foundDevices.getCount();
-  ss << "[";
-  int eddystoneCount = 0;
   for (int i = 0; i < count; i++)
   {
     BLEAdvertisedDevice d = foundDevices.getDevice(i);
 
     if (d.getServiceDataUUID().equals(BLEUUID(EDDYSTONE_UUID)) == true) { // found Eddystone UUID
-      ss << "{\"Address\":\"" << d.getAddress().toString() << "\",\"Rssi\":" << d.getRSSI();
-
-      if (d.haveName())
-      {
-        ss << ",\"Name\":\"" << d.getName() << "\"";
-      }
-
-      if (d.haveAppearance())
-      {
-        ss << ",\"Appearance\":" << d.getAppearance();
-      }
-
-      if (d.haveManufacturerData())
-      {
-        std::string md = d.getManufacturerData();
-        uint8_t* mdp = (uint8_t*)d.getManufacturerData().data();
-        char *pHex = BLEUtils::buildHexData(nullptr, mdp, md.length());
-        ss << ",\"ManufacturerData\":\"" << pHex << "\"";
-        free(pHex);
-      }
-
-      if (d.haveServiceUUID())
-      {
-        ss << ",\"ServiceUUID\":\"" << d.getServiceUUID().toString() << "\"" ;
-      }
-
-      if (d.haveTXPower())
-      {
-        ss << ",\"TxPower\":" << (int)d.getTXPower();
-      }
-
       if (d.haveServiceData()) {
         // get data
         std::string strServiceData = d.getServiceData();
         // convert string data to byte array
         uint8_t cServiceData[100];
         strServiceData.copy((char *)cServiceData, strServiceData.length(), 0);
-        ss << ",\"namespace\":" << eddystoneNamespace(cServiceData);
-        ss << ",\"instance\":" << eddystoneInstance(cServiceData);
+        data.add(eddystoneInstance(cServiceData));
       }
-
-      ss << "}" << (eddystoneCount++ ? "," : "") << "\n";
     }
   }
-  ss << "]";
 
 #ifdef SERIAL_PRINT
   Serial.println("Scan done!");
 #endif
 #ifdef SERIAL_PRINT
   Serial.println("Payload:");
-  Serial.println(ss.str().c_str());
+  serializeJson(doc, Serial);
+  Serial.println();
   Serial.println("[HTTP] begin...");
 #endif
+
   wifiMulti.addAP(WIFI_SSID, WIFI_PASSWORD);
 }
 
@@ -155,17 +125,13 @@ void loop()
     // HTTP POST BLE list
     HTTPClient http;
 
-#ifdef SERIAL_PRINT
-    Serial.println("Payload:");
-    Serial.println(ss.str().c_str());
-    Serial.println("[HTTP] begin...");
-#endif
-
     // configure traged server and url
     http.begin(POST_URL);
 
     // start connection and send HTTP header
-    int httpCode = http.POST(ss.str().c_str());
+    String buf;
+    serializeJson(doc, buf);
+    int httpCode = http.POST(buf);
 
     // httpCode will be negative on error
     if (httpCode > 0)
