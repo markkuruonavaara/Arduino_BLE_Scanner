@@ -7,8 +7,9 @@
 #define WIFI_PASSWORD "YOURAPPASSWORD"
 #define POST_URL "http://YOURSERVERNAMEORIP:3000/"
 #define SCAN_TIME  30 // seconds
+#define EDDYSTONE_UUID 0xFEAAu
 #define WAIT_WIFI_LOOP 5 // around 4 seconds for 1 loop
-#define SLEEP_TIME  300 // seconds
+#define SLEEP_TIME  10 // seconds
 // comment the follow line to disable serial message
 #define SERIAL_PRINT
 
@@ -44,6 +45,16 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks
     }
 };
 
+uint32_t eddystoneNamespace(uint8_t raw[]) {
+  int lsb = 11;
+  return raw[lsb] + (raw[lsb - 1] << 8) + (raw[lsb - 2] << 16) + (raw[lsb - 3] << 24);
+}
+
+uint32_t eddystoneInstance(uint8_t raw[]) {
+  int lsb = 17; // see https://github.com/google/eddystone/tree/master/eddystone-uid
+  return raw[lsb] + (raw[lsb - 1] << 8) + (raw[lsb - 2] << 16) + (raw[lsb - 3] << 24);
+}
+
 void setup()
 {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); //disable brownout detector
@@ -70,51 +81,66 @@ void setup()
   BLEScanResults foundDevices = pBLEScan->start(SCAN_TIME);
   int count = foundDevices.getCount();
   ss << "[";
+  int eddystoneCount = 0;
   for (int i = 0; i < count; i++)
   {
-    if (i > 0) {
-      ss << ",";
-    }
     BLEAdvertisedDevice d = foundDevices.getDevice(i);
-    ss << "{\"Address\":\"" << d.getAddress().toString() << "\",\"Rssi\":" << d.getRSSI();
 
-    if (d.haveName())
-    {
-      ss << ",\"Name\":\"" << d.getName() << "\"";
+    if (d.getServiceDataUUID().equals(BLEUUID(EDDYSTONE_UUID)) == true) { // found Eddystone UUID
+      ss << "{\"Address\":\"" << d.getAddress().toString() << "\",\"Rssi\":" << d.getRSSI();
+
+      if (d.haveName())
+      {
+        ss << ",\"Name\":\"" << d.getName() << "\"";
+      }
+
+      if (d.haveAppearance())
+      {
+        ss << ",\"Appearance\":" << d.getAppearance();
+      }
+
+      if (d.haveManufacturerData())
+      {
+        std::string md = d.getManufacturerData();
+        uint8_t* mdp = (uint8_t*)d.getManufacturerData().data();
+        char *pHex = BLEUtils::buildHexData(nullptr, mdp, md.length());
+        ss << ",\"ManufacturerData\":\"" << pHex << "\"";
+        free(pHex);
+      }
+
+      if (d.haveServiceUUID())
+      {
+        ss << ",\"ServiceUUID\":\"" << d.getServiceUUID().toString() << "\"" ;
+      }
+
+      if (d.haveTXPower())
+      {
+        ss << ",\"TxPower\":" << (int)d.getTXPower();
+      }
+
+      if (d.haveServiceData()) {
+        // get data
+        std::string strServiceData = d.getServiceData();
+        // convert string data to byte array
+        uint8_t cServiceData[100];
+        strServiceData.copy((char *)cServiceData, strServiceData.length(), 0);
+        ss << ",\"namespace\":" << eddystoneNamespace(cServiceData);
+        ss << ",\"instance\":" << eddystoneInstance(cServiceData);
+      }
+
+      ss << "}" << (eddystoneCount++ ? "," : "") << "\n";
     }
-
-    if (d.haveAppearance())
-    {
-      ss << ",\"Appearance\":" << d.getAppearance();
-    }
-
-    if (d.haveManufacturerData())
-    {
-      std::string md = d.getManufacturerData();
-      uint8_t* mdp = (uint8_t*)d.getManufacturerData().data();
-      char *pHex = BLEUtils::buildHexData(nullptr, mdp, md.length());
-      ss << ",\"ManufacturerData\":\"" << pHex << "\"";
-      free(pHex);
-    }
-
-    if (d.haveServiceUUID())
-    {
-      ss << ",\"ServiceUUID\":\"" << d.getServiceUUID().toString() << "\"" ;
-    }
-
-    if (d.haveTXPower())
-    {
-      ss << ",\"TxPower\":" << (int)d.getTXPower();
-    }
-
-    ss << "}";
   }
   ss << "]";
 
 #ifdef SERIAL_PRINT
   Serial.println("Scan done!");
 #endif
-
+#ifdef SERIAL_PRINT
+  Serial.println("Payload:");
+  Serial.println(ss.str().c_str());
+  Serial.println("[HTTP] begin...");
+#endif
   wifiMulti.addAP(WIFI_SSID, WIFI_PASSWORD);
 }
 
